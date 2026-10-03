@@ -4,6 +4,9 @@ import cn.hutool.core.io.FileUtil;
 import com.qcloud.cos.COSClient;
 import com.qcloud.cos.exception.CosClientException;
 import com.qcloud.cos.model.COSObject;
+import com.qcloud.cos.model.CannedAccessControlList;
+import java.net.URI;
+import java.util.Date;
 import com.qcloud.cos.model.GetObjectRequest;
 import com.qcloud.cos.model.PutObjectRequest;
 import com.qcloud.cos.model.PutObjectResult;
@@ -65,7 +68,7 @@ public class CosManager {
         picOperations.setIsPicInfo(1);
         List<PicOperations.Rule> rules = new ArrayList<>();
         // 图片压缩（转成 webp 格式）
-        String webpKey = FileUtil.mainName(key) + ".webp";
+        String webpKey = webpKey(key);
 
 
         PicOperations.Rule compressRule = new PicOperations.Rule();
@@ -75,19 +78,42 @@ public class CosManager {
         rules.add(compressRule);
 
         // 缩略图处理，仅对 > 20 KB 的图片生成缩略图
-        if (file.length() > 2 * 1024) {
+        if (file.length() > 20 * 1024) {
             PicOperations.Rule thumbnailRule = new PicOperations.Rule();
             thumbnailRule.setBucket(cosClientConfig.getBucket());
-            String thumbnailKey = FileUtil.mainName(key) + "_thumbnail." + FileUtil.getSuffix(key);
+            String thumbnailKey = thumbnailKey(key);
             thumbnailRule.setFileId(thumbnailKey);
             // 缩放规则 /thumbnail/<Width>x<Height>>（如果大于原图宽高，则不处理）
             thumbnailRule.setRule(String.format("imageMogr2/thumbnail/%sx%s>", 128, 128));
             rules.add(thumbnailRule);
         }
+        // 仅公共图片可公开读；私有图片和衍生图使用私有 ACL。
+        putObjectRequest.setCannedAcl(key.startsWith("public/")
+                ? CannedAccessControlList.PublicRead : CannedAccessControlList.Private);
         // 构造处理参数
         picOperations.setRules(rules);
         putObjectRequest.setPicOperations(picOperations);
-        return cosClient.putObject(putObjectRequest);
+        PutObjectResult result = cosClient.putObject(putObjectRequest);
+        CannedAccessControlList acl = key.startsWith("public/") ? CannedAccessControlList.PublicRead : CannedAccessControlList.Private;
+        cosClient.setObjectAcl(cosClientConfig.getBucket(), webpKey, acl);
+        if (file.length() > 20 * 1024) { cosClient.setObjectAcl(cosClientConfig.getBucket(), thumbnailKey(key), acl); }
+        return result;
+    }
+
+    public static String webpKey(String key) {
+        return key.substring(0,key.lastIndexOf('.')) + "_webp.webp";
+    }
+    public static String thumbnailKey(String key) {
+        return key.substring(0,key.lastIndexOf('.')) + "_thumbnail." + FileUtil.getSuffix(key);
+    }
+    public String objectUrl(String key) {
+        return cosClientConfig.getHost().replaceAll("/+$", "") + "/" + key;
+    }
+    public String signedUrl(String storedUrl, int seconds) {
+        if (storedUrl == null || storedUrl.isBlank()) { return storedUrl; }
+        String key=URI.create(storedUrl).getPath().substring(1);
+        return cosClient.generatePresignedUrl(cosClientConfig.getBucket(),key,
+                new Date(System.currentTimeMillis()+seconds*1000L)).toString();
     }
 
     /**
@@ -102,7 +128,7 @@ public class CosManager {
 //        // 缩略图处理
 //        PicOperations.Rule thumbnailRule = new PicOperations.Rule();
 //        thumbnailRule.setBucket(cosClientConfig.getBucket());
-//        String thumbnailKey = FileUtil.mainName(key) + "_thumbnail." + FileUtil.getSuffix(key);
+//        String thumbnailKey = thumbnailKey(key);
 //        thumbnailRule.setFileId(thumbnailKey);
 //        // 缩放规则 /thumbnail/<Width>x<Height>>（如果大于原图宽高，则不处理）
 //        thumbnailRule.setRule(String.format("imageMogr2/thumbnail/%sx%s>", 128, 128));

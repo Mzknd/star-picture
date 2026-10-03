@@ -146,7 +146,9 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         } catch (RuntimeException e) { pictureFileCleanup.cleanup(picture); throw e; }
         TransactionActions.afterRollback(() -> pictureFileCleanup.cleanup(picture));
         if (replaced[0] != null) { TransactionActions.afterCommit(() -> pictureFileCleanup.cleanup(replaced[0])); }
-        return PictureVO.objToVo(picture);
+        PictureVO response = PictureVO.objToVo(picture);
+        signPrivateUrls(response);
+        return response;
     }
 
 
@@ -239,6 +241,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             UserVO userVO = userService.getUserVO(user);
             pictureVO.setUser(userVO);
         }
+        signPrivateUrls(pictureVO);
         return pictureVO;
     }
     /**
@@ -266,8 +269,16 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             }
             pictureVO.setUser(userService.getUserVO(user));
         });
+        pictureVOList.forEach(this::signPrivateUrls);
         pictureVOPage.setRecords(pictureVOList);
         return pictureVOPage;
+    }
+
+    private void signPrivateUrls(PictureVO picture) {
+        if (picture.getSpaceId()!=null) {
+            picture.setUrl(cosManager.signedUrl(picture.getUrl(),600));
+            picture.setThumbnailUrl(cosManager.signedUrl(picture.getThumbnailUrl(),600));
+        }
     }
 
     /**
@@ -364,12 +375,13 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             namePrefix = searchText;
         }
 
-        ThrowUtils.throwIf(count > 30, ErrorCode.PARAMS_ERROR, "最多 30 条");
+        ThrowUtils.throwIf(StrUtil.isBlank(searchText) || count==null || count<1 || count>30,
+                ErrorCode.PARAMS_ERROR, "关键词不能为空，数量必须为 1-30");
         // 要抓取的地址
-        String fetchUrl = String.format("https://cn.bing.com/images/async?q=%s&mmasync=1", searchText);
+        String fetchUrl = String.format("https://cn.bing.com/images/async?q=%s&mmasync=1", java.net.URLEncoder.encode(searchText, java.nio.charset.StandardCharsets.UTF_8));
         Document document;
         try {
-            document = Jsoup.connect(fetchUrl).get();
+            document = Jsoup.connect(fetchUrl).timeout(10000).get();
         } catch (IOException e) {
             log.error("获取页面失败", e);
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "获取页面失败");
@@ -385,11 +397,6 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             if (StrUtil.isBlank(fileUrl)) {
                 log.info("当前链接为空，已跳过: {}", fileUrl);
                 continue;
-            }
-            // 处理图片上传地址，防止出现转义问题
-            int questionMarkIndex = fileUrl.indexOf("?");
-            if (questionMarkIndex > -1) {
-                fileUrl = fileUrl.substring(0, questionMarkIndex);
             }
             // 上传图片
             PictureUploadRequest pictureUploadRequest = new PictureUploadRequest();
@@ -546,7 +553,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
 
         // 转换为 PictureVO
         return sortedPictures.stream()
-                .map(PictureVO::objToVo)
+                .map(picture -> { PictureVO vo=PictureVO.objToVo(picture); signPrivateUrls(vo); return vo; })
                 .collect(Collectors.toList());
     }
 

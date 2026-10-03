@@ -102,6 +102,9 @@
         <dependency>
             <groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId><artifactId>imageio-webp</artifactId><version>3.10.1</version>
+        </dependency>
     </dependencies>
     <dependencyManagement>
         <dependencies>

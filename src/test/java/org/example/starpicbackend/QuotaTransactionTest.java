@@ -1,6 +1,7 @@
 package org.example.starpicbackend;
 
 import com.qcloud.cos.COSClient;
+import org.example.starpicbackend.manager.CosManager;
 import org.example.starpicbackend.manager.PictureFileCleanup;
 import org.example.starpicbackend.manager.upload.FilePictureUpload;
 import org.example.starpicbackend.manager.upload.UrlPictureUpload;
@@ -29,6 +30,7 @@ class QuotaTransactionTest {
     @Autowired UserService users;
     @Autowired JdbcTemplate jdbc;
     @MockBean COSClient cosClient;
+    @MockBean CosManager cosManager;
     @MockBean FilePictureUpload files;
     @MockBean UrlPictureUpload urls;
     @MockBean PictureFileCleanup cleanup;

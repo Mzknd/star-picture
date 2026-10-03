@@ -1,215 +1,91 @@
 package org.example.starpicbackend.manager.upload;
 
-import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.io.FileUtil;
-import cn.hutool.core.util.NumberUtil;
-import cn.hutool.core.util.RandomUtil;
-import cn.hutool.http.HttpRequest;
-import com.qcloud.cos.exception.CosClientException;
 import com.qcloud.cos.model.PutObjectResult;
-import com.qcloud.cos.model.ciModel.persistence.CIObject;
-import com.qcloud.cos.model.ciModel.persistence.ImageInfo;
-import com.qcloud.cos.model.ciModel.persistence.ProcessResults;
+import com.qcloud.cos.model.ciModel.persistence.*;
 import lombok.extern.slf4j.Slf4j;
 import org.example.starpicbackend.config.CosClientConfig;
-import org.example.starpicbackend.exception.BusinessException;
-import org.example.starpicbackend.exception.ErrorCode;
+import org.example.starpicbackend.exception.*;
 import org.example.starpicbackend.manager.CosManager;
+import org.example.starpicbackend.manager.PictureFileCleanup;
 import org.example.starpicbackend.model.dto.file.UploadPictureResult;
-import org.springframework.web.multipart.MultipartFile;
-
+import org.example.starpicbackend.model.entity.Picture;
+import org.springframework.beans.factory.annotation.Value;
 import javax.annotation.Resource;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
 import java.io.File;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.List;
+import java.util.*;
 
 @Slf4j
-public abstract class PictureUploadTemplate {  
-  
-    @Resource
-    protected CosManager cosManager;
-  
-    @Resource  
-    protected CosClientConfig cosClientConfig;
-  
-    /**  
-     * 模板方法，定义上传流程  
-     */  
-    public final UploadPictureResult uploadPicture(Object inputSource, String uploadPathPrefix) {
-        // 1. 校验图片
-        validPicture(inputSource);
+public abstract class PictureUploadTemplate {
+    @Resource protected CosManager cosManager;
+    @Resource protected CosClientConfig cosClientConfig;
+    @Resource private PictureFileCleanup cleanup;
+    @Value("${picture.upload.max-bytes:10485760}") protected long maxSizeBytes=10485760;
 
-        // 2. 图片上传地址
-        String uuid = RandomUtil.randomString(16);
-        String originFilename = getOriginFilename(inputSource);
-        // 根据 inputSource 类型获取文件类型
-        String fileType;
-        if (inputSource instanceof String) {
-            // URL 类型：发送 HEAD 请求，获取 HTTP 响应头
-            String contentType = HttpRequest.head((String) inputSource)
-                    .timeout(5000) // 设置超时，单位毫秒
-                    .execute()
-                    .header("Content-Type");
-            if (contentType != null && contentType.contains("/")) {
-                fileType = contentType.substring(contentType.lastIndexOf("/") + 1);
-            } else {
-                fileType = FileUtil.getSuffix(originFilename);
-            }
-            System.out.println("当前的后缀" + fileType);
-            // 允许上传的文件后缀
-            final List<String> ALLOW_FORMAT_LIST = Arrays.asList("jpeg", "jpg", "png", "webp");
-            if (!ALLOW_FORMAT_LIST.contains(fileType)) {
-                fileType = FileUtil.getSuffix(originFilename);
-            }
-        } else if (inputSource instanceof MultipartFile) {
-            // MultipartFile 类型：从文件名获取后缀
-            fileType = FileUtil.getSuffix(originFilename);
-        } else {
-            // 其他类型：从文件名获取后缀
-            fileType = FileUtil.getSuffix(originFilename);
-        }
-        String uploadFilename = String.format("%s_%s.%s", DateUtil.formatDate(new Date()), uuid, fileType);
-        String uploadPath = String.format("/%s/%s", uploadPathPrefix, uploadFilename);
-  
-        File file = null;
+    /** 固定流程：源校验 -> 获取文件 -> 内容校验 -> COS 处理 -> 返回元数据 -> 清理临时文件。 */
+    public final UploadPictureResult uploadPicture(Object source, String prefix) {
+        validPicture(source);
+        File file=null; String key=null;
         try {
-            // 创建临时文件
-            file = File.createTempFile(uploadPath, null);
-            // 处理文件来源（本地或 URL）
-            processFile(inputSource, file);
-            // 上传图片到对象存储
-            PutObjectResult putObjectResult = cosManager.putPictureObject(uploadPath, file);
-            ImageInfo imageInfo = putObjectResult.getCiUploadResult().getOriginalInfo().getImageInfo();
-            ProcessResults processResults = putObjectResult.getCiUploadResult().getProcessResults();
-            List<CIObject> objectList = processResults.getObjectList();
-            if (CollUtil.isNotEmpty(objectList)) {
-                CIObject compressedCiObject = objectList.get(0);
-                // 缩略图默认等于压缩图
-                CIObject thumbnailCiObject = compressedCiObject;
-                // 有生成缩略图，才得到缩略图
-                if (objectList.size() > 1) {
-                    thumbnailCiObject = objectList.get(1);
-                }
-                // 封装压缩图返回结果
-                UploadPictureResult result = buildResult(originFilename, compressedCiObject, thumbnailCiObject, imageInfo);
-                result.setOriginalKey(uploadPath);
-                return result;
+            file=File.createTempFile("star-picture-", ".tmp");
+            processFile(source,file);
+            String format=validateContent(file);
+            key=prefix + "/" + UUID.randomUUID().toString().replace("-", "") + "." + format;
+            PutObjectResult result=cosManager.putPictureObject(key,file);
+            ImageInfo info=result.getCiUploadResult().getOriginalInfo().getImageInfo();
+            List<CIObject> processed=result.getCiUploadResult().getProcessResults().getObjectList();
+            UploadPictureResult upload=new UploadPictureResult(); upload.setOriginalKey(key);
+            String name=FileUtil.mainName(getOriginFilename(source));
+            if(name==null || name.isBlank()) {name="image";}
+            upload.setPicName(name.length()>128 ? name.substring(0,128) : name);
+            upload.setPicWidth(info.getWidth()); upload.setPicHeight(info.getHeight());
+            upload.setPicScale(Math.round(info.getWidth()*100.0/info.getHeight())/100.0);
+            String color=info.getAve();
+            upload.setPicColor(color != null && color.startsWith("0x") ? "#"+color.substring(2) : color);
+            if (processed!=null && !processed.isEmpty()) {
+                CIObject image=processed.get(0), thumbnail=processed.size()>1?processed.get(1):image;
+                upload.setUrl(cosManager.objectUrl(image.getKey()));
+                upload.setThumbnailUrl(cosManager.objectUrl(thumbnail.getKey()));
+                upload.setPicSize(image.getSize().longValue()); upload.setPicFormat(image.getFormat());
+            } else {
+                upload.setUrl(cosManager.objectUrl(key)); upload.setThumbnailUrl(upload.getUrl());
+                upload.setPicSize(file.length()); upload.setPicFormat(format);
             }
-
-
-            // 封装原图返回结果
-            UploadPictureResult result = buildResult(originFilename, file, uploadPath, imageInfo);
-            result.setOriginalKey(uploadPath);
-            return result;
+            return upload;
         } catch (Exception e) {
-            log.error("图片上传到对象存储失败", e);
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "上传失败");
+            if (key!=null) {
+                Picture orphan=new Picture(); orphan.setOriginalKey(key);
+                orphan.setUrl(cosManager.objectUrl(CosManager.webpKey(key)));
+                orphan.setThumbnailUrl(cosManager.objectUrl(CosManager.thumbnailKey(key)));
+                cleanup.cleanup(orphan);
+            }
+            if(e instanceof BusinessException) {throw (BusinessException)e;}
+            log.warn("图片上传或处理失败，未记录远程地址和密钥", e);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR,"图片上传或处理失败");
+        } finally { deleteTempFile(file); }
+    }
+    private String validateContent(File file) throws Exception {
+        ThrowUtils.throwIf(file.length()==0 || file.length()>maxSizeBytes, ErrorCode.PARAMS_ERROR,"文件为空或大小超限");
+        try (ImageInputStream input=ImageIO.createImageInputStream(file)) {
+            Iterator<ImageReader> readers=ImageIO.getImageReaders(input);
+            ThrowUtils.throwIf(!readers.hasNext(), ErrorCode.PARAMS_ERROR,"文件内容不是可解析的图片");
+            ImageReader reader=readers.next();
+            try {
+                reader.setInput(input); String format=reader.getFormatName().toLowerCase(Locale.ROOT);
+                ThrowUtils.throwIf(!Set.of("jpeg","jpg","png","webp").contains(format),ErrorCode.PARAMS_ERROR,"图片格式不支持");
+                long width=reader.getWidth(0), height=reader.getHeight(0);
+                ThrowUtils.throwIf(width<=0 || height<=0 || width*height>40000000L,ErrorCode.PARAMS_ERROR,"图片像素数超限");
+                reader.read(0); return format;
+            } finally {reader.dispose();}
         }
-        finally {
-            // 6. 清理临时文件  
-            deleteTempFile(file);  
-        }  
-    }  
-  
-    /**  
-     * 校验输入源（本地文件或 URL）  
-     */  
-    protected abstract void validPicture(Object inputSource);  
-  
-    /**  
-     * 获取输入源的原始文件名  
-     */  
-    protected abstract String getOriginFilename(Object inputSource);  
-  
-    /**  
-     * 处理输入源并生成本地临时文件  
-     */  
-    protected abstract void processFile(Object inputSource, File file) throws Exception;  
-  
-    /**  
-     * 封装返回结果  
-     */  
-    private UploadPictureResult buildResult(String originFilename, File file, String uploadPath, ImageInfo imageInfo) {  
-        UploadPictureResult uploadPictureResult = new UploadPictureResult();  
-        int picWidth = imageInfo.getWidth();  
-        int picHeight = imageInfo.getHeight();  
-        double picScale = NumberUtil.round(picWidth * 1.0 / picHeight, 2).doubleValue();
-        uploadPictureResult.setPicName(FileUtil.mainName(originFilename));  
-        uploadPictureResult.setPicWidth(picWidth);  
-        uploadPictureResult.setPicHeight(picHeight);  
-        uploadPictureResult.setPicScale(picScale);  
-        uploadPictureResult.setPicFormat(imageInfo.getFormat());  
-        uploadPictureResult.setPicSize(FileUtil.size(file));
-        uploadPictureResult.setPicColor(imageInfo.getAve());
-        uploadPictureResult.setUrl(cosClientConfig.getHost() + "/" + uploadPath);  
-        return uploadPictureResult;  
     }
-
-    /**
-     * 封装返回结果
-     * @param originFilename 原始文件名
-     * @param compressedCiObject 压缩后的对象
-     * @return
-     */
-//    private UploadPictureResult buildResult(String originFilename, CIObject compressedCiObject) {
-//        UploadPictureResult uploadPictureResult = new UploadPictureResult();
-//        int picWidth = compressedCiObject.getWidth();
-//        int picHeight = compressedCiObject.getHeight();
-//        double picScale = NumberUtil.round(picWidth * 1.0 / picHeight, 2).doubleValue();
-//        uploadPictureResult.setPicName(FileUtil.mainName(originFilename));
-//        uploadPictureResult.setPicWidth(picWidth);
-//        uploadPictureResult.setPicHeight(picHeight);
-//        uploadPictureResult.setPicScale(picScale);
-//        uploadPictureResult.setPicFormat(compressedCiObject.getFormat());
-//        uploadPictureResult.setPicSize(compressedCiObject.getSize().longValue());
-//        // 设置图片为压缩后的地址
-//        uploadPictureResult.setUrl(cosClientConfig.getHost() + "/" + compressedCiObject.getKey());
-//        return uploadPictureResult;
-//    }
-
-    /**
-     * 封装返回结果
-     * @param originFilename
-     * @param compressedCiObject
-     * @param thumbnailCiObject
-     * @return
-     */
-    private UploadPictureResult buildResult(String originFilename, CIObject compressedCiObject, CIObject thumbnailCiObject, ImageInfo imageInfo) {
-        UploadPictureResult uploadPictureResult = new UploadPictureResult();
-        int picWidth = compressedCiObject.getWidth();
-        int picHeight = compressedCiObject.getHeight();
-        double picScale = NumberUtil.round(picWidth * 1.0 / picHeight, 2).doubleValue();
-        uploadPictureResult.setPicName(FileUtil.mainName(originFilename));
-        uploadPictureResult.setPicWidth(picWidth);
-        uploadPictureResult.setPicHeight(picHeight);
-        uploadPictureResult.setPicScale(picScale);
-        uploadPictureResult.setPicFormat(compressedCiObject.getFormat());
-        uploadPictureResult.setPicColor(imageInfo.getAve());
-        uploadPictureResult.setPicSize(compressedCiObject.getSize().longValue());
-        // 设置图片为压缩后的地址
-        uploadPictureResult.setUrl(cosClientConfig.getHost() + "/" + compressedCiObject.getKey());
-        // 设置缩略图
-        uploadPictureResult.setThumbnailUrl(cosClientConfig.getHost() + "/" + thumbnailCiObject.getKey());
-        return uploadPictureResult;
+    protected abstract void validPicture(Object source);
+    protected abstract String getOriginFilename(Object source);
+    protected abstract void processFile(Object source, File file) throws Exception;
+    public void deleteTempFile(File file) {
+        if(file!=null && file.exists() && !file.delete()) {log.warn("临时图片清理失败: {}",file.getName());}
     }
-
-
-
-
-
-
-    /**  
-     * 删除临时文件  
-     */  
-    public void deleteTempFile(File file) {  
-        if (file == null) {  
-            return;  
-        }  
-        boolean deleteResult = file.delete();  
-        if (!deleteResult) {  
-            log.error("file delete error, filepath = {}", file.getAbsolutePath());  
-        }  
-    }  
 }
