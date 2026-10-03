@@ -28,6 +28,7 @@ import org.example.starpicbackend.model.vo.PictureVO;
 import org.example.starpicbackend.service.PictureService;
 import org.example.starpicbackend.service.SpaceService;
 import org.example.starpicbackend.service.UserService;
+import org.example.starpicbackend.utils.QueryRequestUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -56,26 +57,12 @@ public class PictureController {
     private PictureService pictureService;
 
     @Resource
-    private StringRedisTemplate stringRedisTemplate;
-
-    @Resource
     private SpaceService spaceService;
-    /**
-     * 本地缓存
-     */
-    private final Cache<String, String> LOCAL_CACHE =
-            Caffeine.newBuilder().initialCapacity(1024)
-                    .maximumSize(10000L)//最大一万条
-                    // 缓存 5 分钟移除
-                    .expireAfterWrite(5L, TimeUnit.MINUTES)
-                    .build();
-
 
     /**
      * 上传图片（可重新上传）
      */
     @PostMapping("/upload")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<PictureVO> uploadPicture(
             @RequestPart("file") MultipartFile multipartFile,
             PictureUploadRequest pictureUploadRequest,
@@ -126,6 +113,7 @@ public class PictureController {
 
         // 补充审核参数
         User loginUser = userService.getLoginUser(request);
+        picture.setSpaceId(oldPicture.getSpaceId());
         pictureService.fillReviewParams(picture, loginUser);
         // 操作数据库
         boolean result = pictureService.updateById(picture);
@@ -160,7 +148,7 @@ public class PictureController {
         ThrowUtils.throwIf(picture == null, ErrorCode.NOT_FOUND_ERROR);
         // 空间权限校验
         Long spaceId = picture.getSpaceId();
-        if (spaceId != null) {
+        if (spaceId != null || !Integer.valueOf(PictureReviewStatusEnum.PASS.getValue()).equals(picture.getReviewStatus())) {
             User loginUser = userService.getLoginUser(request);
             pictureService.checkPictureAuth(loginUser, picture);
         }
@@ -175,6 +163,7 @@ public class PictureController {
     @PostMapping("/list/page")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Page<Picture>> listPictureByPage(@RequestBody PictureQueryRequest pictureQueryRequest) {
+        QueryRequestUtils.validatePage(pictureQueryRequest, 100);
         long current = pictureQueryRequest.getCurrent();
         long size = pictureQueryRequest.getPageSize();
         // 查询数据库
@@ -189,27 +178,20 @@ public class PictureController {
     @PostMapping("/list/page/vo")
     public BaseResponse<Page<PictureVO>> listPictureVOByPage(@RequestBody PictureQueryRequest pictureQueryRequest,
                                                              HttpServletRequest request) {
+        QueryRequestUtils.validatePage(pictureQueryRequest, 20);
         long current = pictureQueryRequest.getCurrent();
         long size = pictureQueryRequest.getPageSize();
-        // 限制爬虫
-        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
-        // 普通用户默认只能查看已过审的数据
-        pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
-        // 空间权限校验
         Long spaceId = pictureQueryRequest.getSpaceId();
-        // 公开图库
         if (spaceId == null) {
-            // 普通用户默认只能查看已过审的公开数据
             pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
             pictureQueryRequest.setNullSpaceId(true);
         } else {
-            // 私有空间
             User loginUser = userService.getLoginUser(request);
             Space space = spaceService.getById(spaceId);
             ThrowUtils.throwIf(space == null, ErrorCode.NOT_FOUND_ERROR, "空间不存在");
-            if (!loginUser.getId().equals(space.getUserId())) {
-                throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "没有空间权限");
-            }
+            spaceService.checkSpaceAuth(loginUser, space);
+            pictureQueryRequest.setNullSpaceId(false);
+            pictureQueryRequest.setReviewStatus(null);
         }
 
         // 查询数据库
@@ -266,6 +248,7 @@ public class PictureController {
             @RequestBody PictureUploadRequest pictureUploadRequest,
             HttpServletRequest request) {
         User loginUser = userService.getLoginUser(request);
+        ThrowUtils.throwIf(pictureUploadRequest == null, ErrorCode.PARAMS_ERROR);
         String fileUrl = pictureUploadRequest.getFileUrl();
         PictureVO pictureVO = pictureService.uploadPicture(fileUrl, pictureUploadRequest, loginUser);
         return ResultUtils.success(pictureVO);
@@ -289,77 +272,11 @@ public class PictureController {
         return ResultUtils.success(uploadCount);
     }
 
-    @Deprecated
+    /** 保留旧路径兼容调用方，权限和查询规则与正常列表完全一致。 */
     @PostMapping("/list/page/vo/cache")
-    public BaseResponse<Page<PictureVO>> listPictureVOByPageWithCache(@RequestBody PictureQueryRequest pictureQueryRequest,
-                                                                      HttpServletRequest request) {
-        long current = pictureQueryRequest.getCurrent();
-        long size = pictureQueryRequest.getPageSize();
-        // 限制爬虫
-        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
-        // 普通用户默认只能查看已过审的数据
-        pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
-
-//        // 构建缓存 key
-//        String queryCondition = JSONUtil.toJsonStr(pictureQueryRequest);
-//        String hashKey = DigestUtils.md5DigestAsHex(queryCondition.getBytes());
-//        String redisKey = "starpic:listPictureVOByPage:" + hashKey;
-//        // 从 Redis 缓存中查询
-//        ValueOperations<String, String> valueOps = stringRedisTemplate.opsForValue();
-//        String cachedValue = valueOps.get(redisKey);
-//        if (cachedValue != null) {
-//            // 如果缓存命中，返回结果
-//            Page<PictureVO> cachedPage = JSONUtil.toBean(cachedValue, Page.class);
-//            return ResultUtils.success(cachedPage);
-//        }
-
-        // 构建缓存 key
-        String queryCondition = JSONUtil.toJsonStr(pictureQueryRequest);
-        String hashKey = DigestUtils.md5DigestAsHex(queryCondition.getBytes());
-        String cacheKey = "yupicture:listPictureVOByPage:" + hashKey;
-
-        // 1. 查询本地缓存（Caffeine）
-        String cachedValue = LOCAL_CACHE.getIfPresent(cacheKey);
-        if (cachedValue != null) {
-            Page<PictureVO> cachedPage = JSONUtil.toBean(cachedValue, Page.class);
-            return ResultUtils.success(cachedPage);
-        }
-        // 2. 查询分布式缓存（Redis）
-        ValueOperations<String, String> valueOps = stringRedisTemplate.opsForValue();
-        cachedValue = valueOps.get(cacheKey);
-        if (cachedValue != null) {
-            // 如果命中 Redis，存入本地缓存并返回
-            LOCAL_CACHE.put(cacheKey, cachedValue);
-            Page<PictureVO> cachedPage = JSONUtil.toBean(cachedValue, Page.class);
-            return ResultUtils.success(cachedPage);
-        }
-        // 3. 查询数据库
-        Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
-                pictureService.getQueryWrapper(pictureQueryRequest));
-        Page<PictureVO> pictureVOPage = pictureService.getPictureVOPage(picturePage, request);
-
-        // 4. 更新缓存
-        String cacheValue = JSONUtil.toJsonStr(pictureVOPage);
-        // 更新本地缓存
-        LOCAL_CACHE.put(cacheKey, cacheValue);
-        // 更新 Redis 缓存，设置过期时间为 5 -10 分钟,防止缓存雪崩
-        int cacheExpireTime = 300 + RandomUtil.randomInt(0,300);
-        valueOps.set(cacheKey, cacheValue, cacheExpireTime, TimeUnit.SECONDS);
-
-//        // 查询数据库
-//        Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
-//                pictureService.getQueryWrapper(pictureQueryRequest));
-//        // 获取封装类
-//        Page<PictureVO> pictureVOPage = pictureService.getPictureVOPage(picturePage, request);
-//
-//        // 存入 Redis 缓存
-//        String cacheValue = JSONUtil.toJsonStr(pictureVOPage);
-//        // 5 - 10 分钟随机过期，防止雪崩
-//        int cacheExpireTime = 300 +  RandomUtil.randomInt(0, 300);
-//        valueOps.set(redisKey, cacheValue, cacheExpireTime, TimeUnit.SECONDS);
-
-        // 返回结果
-        return ResultUtils.success(pictureVOPage);
+    public BaseResponse<Page<PictureVO>> listPictureVOByPageWithCache(
+            @RequestBody PictureQueryRequest pictureQueryRequest, HttpServletRequest request) {
+        return listPictureVOByPage(pictureQueryRequest, request);
     }
 
     /**

@@ -22,6 +22,9 @@ import org.example.starpicbackend.model.enums.SpaceLevelEnum;
 import org.example.starpicbackend.model.vo.SpaceVO;
 import org.example.starpicbackend.service.SpaceService;
 import org.example.starpicbackend.service.UserService;
+import org.example.starpicbackend.service.PictureService;
+import org.example.starpicbackend.model.entity.Picture;
+import org.example.starpicbackend.utils.QueryRequestUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
@@ -47,6 +50,9 @@ public class SpaceController {
 
     @Resource
     private SpaceService spaceService;
+
+    @Resource
+    private PictureService pictureService;
 
 
     /**
@@ -78,6 +84,8 @@ public class SpaceController {
         ThrowUtils.throwIf(oldSpace == null, ErrorCode.NOT_FOUND_ERROR);
         // 仅本人或管理员可删除
         spaceService.checkSpaceAuth(loginUser,oldSpace);
+        ThrowUtils.throwIf(pictureService.lambdaQuery().eq(Picture::getSpaceId, id).count() > 0,
+                ErrorCode.OPERATION_ERROR, "请先删除空间内的图片");
         // 操作数据库
         boolean result = spaceService.removeById(id);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
@@ -138,6 +146,7 @@ public class SpaceController {
         // 查询数据库
         Space space = spaceService.getById(id);
         ThrowUtils.throwIf(space == null, ErrorCode.NOT_FOUND_ERROR);
+        spaceService.checkSpaceAuth(userService.getLoginUser(request), space);
         // 获取封装类
         return ResultUtils.success(spaceService.getSpaceVO(space, request));
     }
@@ -148,6 +157,7 @@ public class SpaceController {
     @PostMapping("/list/page")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Page<Space>> listSpaceByPage(@RequestBody SpaceQueryRequest spaceQueryRequest) {
+        QueryRequestUtils.validatePage(spaceQueryRequest, 100);
         long current = spaceQueryRequest.getCurrent();
         long size = spaceQueryRequest.getPageSize();
         // 查询数据库
@@ -162,10 +172,12 @@ public class SpaceController {
     @PostMapping("/list/page/vo")
     public BaseResponse<Page<SpaceVO>> listSpaceVOByPage(@RequestBody SpaceQueryRequest spaceQueryRequest,
                                                              HttpServletRequest request) {
+        QueryRequestUtils.validatePage(spaceQueryRequest, 20);
+        User loginUser = userService.getLoginUser(request);
+        // 用户列表始终限定本人，管理员跨用户查询使用管理接口。
+        spaceQueryRequest.setUserId(loginUser.getId());
         long current = spaceQueryRequest.getCurrent();
         long size = spaceQueryRequest.getPageSize();
-        // 限制爬虫
-        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
 
         // 查询数据库
         Page<Space> spacePage = spaceService.page(new Page<>(current, size),

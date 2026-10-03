@@ -29,6 +29,7 @@ import org.example.starpicbackend.mapper.PictureMapper;
 import org.example.starpicbackend.service.SpaceService;
 import org.example.starpicbackend.service.UserService;
 import org.example.starpicbackend.utils.ColorSimilarUtils;
+import org.example.starpicbackend.utils.QueryRequestUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -212,6 +213,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         if (pictureQueryRequest == null) {
             return queryWrapper;
         }
+        QueryRequestUtils.validateSort(pictureQueryRequest, "id", "name", "createTime", "editTime", "picSize", "picWidth", "picHeight", "picScale");
         // 从对象中取值
         Long id = pictureQueryRequest.getId();
         String name = pictureQueryRequest.getName();
@@ -269,7 +271,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             }
         }
         // 排序
-        queryWrapper.orderBy(StrUtil.isNotEmpty(sortField), sortOrder.equals("ascend"), sortField);
+        queryWrapper.orderBy(StrUtil.isNotEmpty(sortField), "ascend".equals(sortOrder), sortField);
         return queryWrapper;
     }
 
@@ -332,13 +334,16 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         Long id = picture.getId();
         String url = picture.getUrl();
         String introduction = picture.getIntroduction();
+        ThrowUtils.throwIf(picture.getName() != null && (StrUtil.isBlank(picture.getName()) || picture.getName().length() > 128), ErrorCode.PARAMS_ERROR, "名称长度不合法");
+        ThrowUtils.throwIf(picture.getCategory() != null && picture.getCategory().length() > 64, ErrorCode.PARAMS_ERROR, "分类过长");
+        ThrowUtils.throwIf(picture.getTags() != null && picture.getTags().length() > 512, ErrorCode.PARAMS_ERROR, "标签过长");
         // 修改数据时，id 不能为空，有参数则校验
         ThrowUtils.throwIf(ObjUtil.isNull(id), ErrorCode.PARAMS_ERROR, "id 不能为空");
         if (StrUtil.isNotBlank(url)) {
-            ThrowUtils.throwIf(url.length() > 1024, ErrorCode.PARAMS_ERROR, "url 过长");
+            ThrowUtils.throwIf(url.length() > 512, ErrorCode.PARAMS_ERROR, "url 过长");
         }
         if (StrUtil.isNotBlank(introduction)) {
-            ThrowUtils.throwIf(introduction.length() > 800, ErrorCode.PARAMS_ERROR, "简介过长");
+            ThrowUtils.throwIf(introduction.length() > 512, ErrorCode.PARAMS_ERROR, "简介过长");
         }
     }
 
@@ -382,11 +387,11 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
      */
     @Override
     public void fillReviewParams(Picture picture, User loginUser) {
-        if (userService.isAdmin(loginUser)) {
-            // 管理员自动过审
+        if (picture.getSpaceId() != null || userService.isAdmin(loginUser)) {
+            // 私有图片无需公共审核；管理员上传公共图片自动过审
             picture.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
             picture.setReviewerId(loginUser.getId());
-            picture.setReviewMessage("管理员自动过审");
+            picture.setReviewMessage(picture.getSpaceId() == null ? "管理员自动过审" : "私有空间图片");
             picture.setReviewTime(new Date());
         } else {
             // 非管理员，创建或编辑都要改为待审核
@@ -492,17 +497,15 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
      */
     @Override
     public void checkPictureAuth(User loginUser, Picture picture) {
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
+        ThrowUtils.throwIf(picture == null, ErrorCode.NOT_FOUND_ERROR);
         Long spaceId = picture.getSpaceId();
         if (spaceId == null) {
-            // 公共图库，仅本人或管理员可操作
-            if (!picture.getUserId().equals(loginUser.getId()) && !userService.isAdmin(loginUser)) {
-                throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
-            }
+            ThrowUtils.throwIf(!picture.getUserId().equals(loginUser.getId()) && !userService.isAdmin(loginUser),
+                    ErrorCode.NO_AUTH_ERROR);
         } else {
-            // 私有空间，仅空间管理员可操作
-            if (!picture.getUserId().equals(loginUser.getId())) {
-                throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
-            }
+            Space space = spaceService.getById(spaceId);
+            spaceService.checkSpaceAuth(loginUser, space);
         }
     }
 
@@ -564,6 +567,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         // 校验权限
         checkPictureAuth(loginUser, oldPicture);
         // 补充审核参数
+        picture.setSpaceId(oldPicture.getSpaceId());
         this.fillReviewParams(picture, loginUser);
         // 操作数据库
         boolean result = this.updateById(picture);
