@@ -23,6 +23,8 @@ public interface SpaceService extends IService<Space> {
      * @param loginUser
      * @return
      */
+    void deleteSpace(long id, User loginUser);
+
     long addSpace(SpaceAddRequest spaceAddRequest, User loginUser);
 
     /**

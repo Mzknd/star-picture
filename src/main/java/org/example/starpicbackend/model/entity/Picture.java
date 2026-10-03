@@ -28,6 +28,9 @@ public class Picture implements Serializable {
      */
     private String thumbnailUrl;
 
+    /** COS 原图对象 Key，用于资源回收，不向客户端直接暴露。 */
+    private String originalKey;
+
 
     /**
      * 图片名称

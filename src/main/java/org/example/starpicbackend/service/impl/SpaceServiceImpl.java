@@ -21,6 +21,8 @@ import org.example.starpicbackend.mapper.SpaceMapper;
 import org.example.starpicbackend.service.UserService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.example.starpicbackend.mapper.PictureMapper;
+import org.example.starpicbackend.model.entity.Picture;
 import org.example.starpicbackend.utils.QueryRequestUtils;
 import org.springframework.transaction.TransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -54,6 +56,20 @@ public class SpaceServiceImpl extends ServiceImpl<SpaceMapper, Space>
      * @param loginUser
      * @return
      */
+    @Resource private PictureMapper pictureMapper;
+
+    @Override
+    public void deleteSpace(long id, User loginUser) {
+        transactionTemplate.execute(status -> {
+            Space space = getBaseMapper().selectForUpdate(id);
+            checkSpaceAuth(loginUser, space);
+            ThrowUtils.throwIf(pictureMapper.selectCount(new QueryWrapper<Picture>().eq("spaceId", id)) > 0,
+                    ErrorCode.OPERATION_ERROR, "请先删除空间内的图片");
+            ThrowUtils.throwIf(!removeById(id), ErrorCode.OPERATION_ERROR);
+            return null;
+        });
+    }
+
     @Override
     public long addSpace(SpaceAddRequest spaceAddRequest, User loginUser) {
         // 在此处将实体类和 DTO 进行转换

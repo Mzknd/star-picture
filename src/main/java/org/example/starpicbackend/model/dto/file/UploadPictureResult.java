@@ -14,6 +14,8 @@ public class UploadPictureResult {
      */
     private String thumbnailUrl;
 
+    private String originalKey;
+
 
     /**
      * 图片名称

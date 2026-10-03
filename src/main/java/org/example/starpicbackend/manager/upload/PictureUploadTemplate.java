@@ -93,12 +93,16 @@ public abstract class PictureUploadTemplate {
                     thumbnailCiObject = objectList.get(1);
                 }
                 // 封装压缩图返回结果
-                return buildResult(originFilename, compressedCiObject, thumbnailCiObject, imageInfo);
+                UploadPictureResult result = buildResult(originFilename, compressedCiObject, thumbnailCiObject, imageInfo);
+                result.setOriginalKey(uploadPath);
+                return result;
             }
 
 
             // 封装原图返回结果
-            return buildResult(originFilename, file, uploadPath, imageInfo);
+            UploadPictureResult result = buildResult(originFilename, file, uploadPath, imageInfo);
+            result.setOriginalKey(uploadPath);
+            return result;
         } catch (Exception e) {
             log.error("图片上传到对象存储失败", e);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "上传失败");
