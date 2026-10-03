@@ -1,0 +1,54 @@
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /api
+spring:
+  application:
+    name: star-picture
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/star_pic}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+  redis:
+    host: ${REDIS_HOST:127.0.0.1}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    database: ${REDIS_DATABASE:0}
+    timeout: 5s
+  session:
+    store-type: redis
+    timeout: 1d
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: false
+  global-config:
+    db-config:
+      logic-delete-field: isDelete
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+knife4j:
+  enable: true
+  openapi:
+    title: Star Picture API
+    version: v1.0
+    group:
+      default:
+        group-name: 默认分组
+        api-rule: package
+        api-rule-resources:
+          - org.example.starpicbackend.controller
+cos:
+  client:
+    host: ${COS_HOST:}
+    secretId: ${COS_SECRET_ID:}
+    secretKey: ${COS_SECRET_KEY:}
+    region: ${COS_REGION:ap-shanghai}
+    bucket: ${COS_BUCKET:}
+app:
+  user:
+    initial-password: ${INITIAL_USER_PASSWORD:}
