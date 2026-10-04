@@ -13,6 +13,7 @@ import org.example.starpicbackend.exception.ErrorCode;
 import org.example.starpicbackend.exception.ThrowUtils;
 import org.example.starpicbackend.manager.CosManager;
 import org.example.starpicbackend.manager.PictureFileCleanup;
+import org.example.starpicbackend.manager.PublicPictureCache;
 import org.example.starpicbackend.mapper.SpaceMapper;
 import org.example.starpicbackend.utils.TransactionActions;
 import org.example.starpicbackend.manager.FileManager;
@@ -85,6 +86,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
 
     @Resource private SpaceMapper spaceMapper;
     @Resource private PictureFileCleanup pictureFileCleanup;
+    @Resource private PublicPictureCache publicPictureCache;
 
 
     @Override
@@ -144,6 +146,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
                 return null;
             });
         } catch (RuntimeException e) { pictureFileCleanup.cleanup(picture); throw e; }
+        if(spaceId==null) {publicPictureCache.invalidateAfterCommit();}
         TransactionActions.afterRollback(() -> pictureFileCleanup.cleanup(picture));
         if (replaced[0] != null) { TransactionActions.afterCommit(() -> pictureFileCleanup.cleanup(replaced[0])); }
         PictureVO response = PictureVO.objToVo(picture);
@@ -176,7 +179,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         String picFormat = pictureQueryRequest.getPicFormat();
         String searchText = pictureQueryRequest.getSearchText();
         Long userId = pictureQueryRequest.getUserId();
-        String sortField = pictureQueryRequest.getSortField();
+        String sortField = StrUtil.blankToDefault(pictureQueryRequest.getSortField(), "createTime");
         String sortOrder = pictureQueryRequest.getSortOrder();
         Integer reviewStatus = pictureQueryRequest.getReviewStatus();
         String reviewMessage = pictureQueryRequest.getReviewMessage();
@@ -221,6 +224,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         }
         // 排序
         queryWrapper.orderBy(StrUtil.isNotEmpty(sortField), "ascend".equals(sortOrder), sortField);
+        if(!"id".equals(sortField)) {queryWrapper.orderByDesc("id");}
         return queryWrapper;
     }
 
@@ -312,16 +316,23 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
      */
     @Override
     public void doPictureReview(PictureReviewRequest pictureReviewRequest, User loginUser) {
+        ThrowUtils.throwIf(pictureReviewRequest==null,ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(loginUser==null || !userService.isAdmin(loginUser),ErrorCode.NO_AUTH_ERROR);
         //1.校验参数
         Long id = pictureReviewRequest.getId();
         Integer reviewStatus = pictureReviewRequest.getReviewStatus();
         PictureReviewStatusEnum reviewStatusEnum = PictureReviewStatusEnum.getEnumByValue(reviewStatus);
-        if (id == null || reviewStatusEnum == null || PictureReviewStatusEnum.REVIEWING.equals(reviewStatusEnum)) {
+        if (id == null || id<=0 || reviewStatusEnum == null || PictureReviewStatusEnum.REVIEWING.equals(reviewStatusEnum)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         // 2.判断图片是否存在
         Picture oldPicture = this.getById(id);
         ThrowUtils.throwIf(oldPicture == null, ErrorCode.NOT_FOUND_ERROR);
+        ThrowUtils.throwIf(StrUtil.isNotBlank(pictureReviewRequest.getExpectedUrl())
+                && !pictureReviewRequest.getExpectedUrl().equals(oldPicture.getUrl()),
+                ErrorCode.OPERATION_ERROR,"图片已替换，请刷新后重新审核");
+        ThrowUtils.throwIf(pictureReviewRequest.getReviewMessage()!=null && pictureReviewRequest.getReviewMessage().length()>512,
+                ErrorCode.PARAMS_ERROR,"审核说明过长");
         //3.校验审核状态是否重复
         // 已是该状态
         if (oldPicture.getReviewStatus().equals(reviewStatus)) {
@@ -333,8 +344,13 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         //4.数据库操作
         updatePicture.setReviewerId(loginUser.getId());
         updatePicture.setReviewTime(new Date());
-        boolean result = this.updateById(updatePicture);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        Map<String,Object> snapshot=new HashMap<>();
+        snapshot.put("id",id);snapshot.put("url",oldPicture.getUrl());snapshot.put("reviewStatus",oldPicture.getReviewStatus());
+        snapshot.put("name",oldPicture.getName());snapshot.put("introduction",oldPicture.getIntroduction());
+        snapshot.put("category",oldPicture.getCategory());snapshot.put("tags",oldPicture.getTags());
+        boolean result = this.update(updatePicture,new QueryWrapper<Picture>().allEq(snapshot,true));
+        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR,"图片内容或审核状态已改变，请刷新后重新审核");
+        if(oldPicture.getSpaceId()==null) {publicPictureCache.invalidateAfterCommit();}
     }
 
     /**
@@ -472,6 +488,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             }
             return old;
         });
+        if(initial.getSpaceId()==null) {publicPictureCache.invalidateAfterCommit();}
         TransactionActions.afterCommit(() -> pictureFileCleanup.cleanup(deleted));
     }
 
@@ -503,6 +520,7 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         // 操作数据库
         boolean result = this.updateById(picture);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        if(oldPicture.getSpaceId()==null) {publicPictureCache.invalidateAfterCommit();}
     }
 
     /**
@@ -533,7 +551,8 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
             return Collections.emptyList();
         }
         // 将目标颜色转为 Color 对象
-        Color targetColor = Color.decode(picColor);
+        ThrowUtils.throwIf(!picColor.matches("(?i)(?:#|0x)?[0-9a-f]{6}"), ErrorCode.PARAMS_ERROR, "请使用 6 位 RGB 十六进制颜色");
+        Color targetColor = Color.decode(picColor.startsWith("#") || picColor.startsWith("0x") ? picColor : "#" + picColor);
         // 4. 计算相似度并排序
         List<Picture> sortedPictures = pictureList.stream()
                 .sorted(Comparator.comparingDouble(picture -> {
@@ -571,10 +590,15 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
         List<String> tags = pictureEditByBatchRequest.getTags();
 
         // 1. 校验参数
-        ThrowUtils.throwIf(spaceId == null || CollUtil.isEmpty(pictureIdList), ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(spaceId == null || CollUtil.isEmpty(pictureIdList) || pictureIdList.size()>100,
+                ErrorCode.PARAMS_ERROR, "每次只能编辑 1-100 张图片");
+        ThrowUtils.throwIf(pictureIdList.stream().anyMatch(id->id==null || id<=0),ErrorCode.PARAMS_ERROR,"图片 ID 不合法");
+        pictureIdList=pictureIdList.stream().distinct().collect(Collectors.toList());
+        ThrowUtils.throwIf(category==null && tags==null && StrUtil.isBlank(pictureEditByBatchRequest.getNameRule()),
+                ErrorCode.PARAMS_ERROR,"至少提供一个编辑字段");
         ThrowUtils.throwIf(loginUser == null, ErrorCode.NO_AUTH_ERROR);
         // 2. 校验空间权限
-        Space space = spaceService.getById(spaceId);
+        Space space = spaceMapper.selectForUpdate(spaceId);
         ThrowUtils.throwIf(space == null, ErrorCode.NOT_FOUND_ERROR, "空间不存在");
         if (!loginUser.getId().equals(space.getUserId())) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "没有空间访问权限");
@@ -585,23 +609,23 @@ public class PictureServiceImpl extends ServiceImpl<PictureMapper, Picture>
                 .select(Picture::getId, Picture::getSpaceId)
                 .eq(Picture::getSpaceId, spaceId)
                 .in(Picture::getId, pictureIdList)
+                .orderByAsc(Picture::getId)
                 .list();
 
-        if (pictureList.isEmpty()) {
-            return;
-        }
+        ThrowUtils.throwIf(pictureList.size()!=pictureIdList.size(),ErrorCode.PARAMS_ERROR,"部分图片不存在或不属于当前空间");
         // 4. 更新分类和标签
         pictureList.forEach(picture -> {
-            if (StrUtil.isNotBlank(category)) {
+            if (category != null) {
                 picture.setCategory(category);
             }
-            if (CollUtil.isNotEmpty(tags)) {
+            if (tags != null) {
                 picture.setTags(JSONUtil.toJsonStr(tags));
             }
         });
         // 批量重命名
         String nameRule = pictureEditByBatchRequest.getNameRule();
         fillPictureWithNameRule(pictureList, nameRule);
+        pictureList.forEach(picture->{ picture.setEditTime(new Date()); validPicture(picture); });
 
         // 5. 批量更新
         boolean result = this.updateBatchById(pictureList);

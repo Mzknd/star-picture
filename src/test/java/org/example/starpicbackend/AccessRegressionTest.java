@@ -3,6 +3,7 @@ package org.example.starpicbackend;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.example.starpicbackend.controller.PictureController;
+import org.example.starpicbackend.manager.PublicPictureCache;
 import org.example.starpicbackend.controller.SpaceController;
 import org.example.starpicbackend.exception.BusinessException;
 import org.example.starpicbackend.exception.ErrorCode;
@@ -26,10 +27,13 @@ class AccessRegressionTest {
     private final PictureService pictures = mock(PictureService.class);
     private final SpaceService spaces = mock(SpaceService.class);
     private final UserService users = mock(UserService.class);
+    private final PublicPictureCache cache=mock(PublicPictureCache.class);
     private final PictureController controller = new PictureController();
     private final MockHttpServletRequest request = new MockHttpServletRequest();
     @BeforeEach void setup() {
         ReflectionTestUtils.setField(controller, "pictureService", pictures);
+        ReflectionTestUtils.setField(controller,"publicPictureCache",cache);
+        when(cache.get(any(),any())).thenAnswer(call -> ((java.util.function.Supplier<?>)call.getArgument(1)).get());
         ReflectionTestUtils.setField(controller, "spaceService", spaces);
         ReflectionTestUtils.setField(controller, "userService", users);
         when(pictures.getQueryWrapper(any())).thenReturn(new QueryWrapper<>());

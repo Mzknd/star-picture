@@ -59,6 +59,23 @@ public class SpaceServiceImpl extends ServiceImpl<SpaceMapper, Space>
     @Resource private PictureMapper pictureMapper;
 
     @Override
+    public void updateSpace(org.example.starpicbackend.model.dto.space.SpaceUpdateRequest request, User loginUser) {
+        ThrowUtils.throwIf(request==null || request.getId()==null || request.getId()<=0,ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(loginUser==null || !userService.isAdmin(loginUser),ErrorCode.NO_AUTH_ERROR);
+        transactionTemplate.execute(status->{
+            Space current=getBaseMapper().selectForUpdate(request.getId());
+            ThrowUtils.throwIf(current==null,ErrorCode.NOT_FOUND_ERROR);
+            Space updated=new Space();BeanUtils.copyProperties(request,updated);
+            fillSpaceBySpaceLevel(updated);validSpace(updated,false);
+            ThrowUtils.throwIf(updated.getMaxSize()!=null && updated.getMaxSize()<current.getTotalSize(),
+                    ErrorCode.PARAMS_ERROR,"容量上限不能低于当前用量");
+            ThrowUtils.throwIf(updated.getMaxCount()!=null && updated.getMaxCount()<current.getTotalCount(),
+                    ErrorCode.PARAMS_ERROR,"数量上限不能低于当前用量");
+            ThrowUtils.throwIf(!updateById(updated),ErrorCode.OPERATION_ERROR);return null;
+        });
+    }
+
+    @Override
     public void deleteSpace(long id, User loginUser) {
         transactionTemplate.execute(status -> {
             Space space = getBaseMapper().selectForUpdate(id);
@@ -72,6 +89,8 @@ public class SpaceServiceImpl extends ServiceImpl<SpaceMapper, Space>
 
     @Override
     public long addSpace(SpaceAddRequest spaceAddRequest, User loginUser) {
+        ThrowUtils.throwIf(spaceAddRequest == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(loginUser == null || loginUser.getId() == null, ErrorCode.NOT_LOGIN_ERROR);
         // 在此处将实体类和 DTO 进行转换
         Space space = new Space();
         BeanUtils.copyProperties(spaceAddRequest, space);
@@ -96,6 +115,10 @@ public class SpaceServiceImpl extends ServiceImpl<SpaceMapper, Space>
         String lock = String.valueOf(userId).intern();
         synchronized (lock) {
             Long newSpaceId = transactionTemplate.execute(status -> {
+                // Serialize the existence check across instances on the same user row.
+                User lockedUser = userService.getBaseMapper().selectOne(new QueryWrapper<User>()
+                        .eq("id", userId).last("FOR UPDATE"));
+                ThrowUtils.throwIf(lockedUser == null, ErrorCode.NOT_LOGIN_ERROR);
                 boolean exists = this.lambdaQuery().eq(Space::getUserId, userId).exists();
                 ThrowUtils.throwIf(exists, ErrorCode.OPERATION_ERROR, "每个用户仅能有一个私有空间");
                 // 写入数据库
@@ -195,6 +218,8 @@ public class SpaceServiceImpl extends ServiceImpl<SpaceMapper, Space>
     @Override
     public void validSpace(Space space, boolean add) {
         ThrowUtils.throwIf(space == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(space.getMaxSize()!=null && space.getMaxSize()<0,ErrorCode.PARAMS_ERROR,"容量不能为负数");
+        ThrowUtils.throwIf(space.getMaxCount()!=null && space.getMaxCount()<0,ErrorCode.PARAMS_ERROR,"数量不能为负数");
         // 从对象中取值
         String spaceName = space.getSpaceName();
         Integer spaceLevel = space.getSpaceLevel();

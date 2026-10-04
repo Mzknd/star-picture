@@ -12,7 +12,10 @@ import java.util.Arrays;
 @Component
 public class RemoteImagePolicy {
     @Value("${picture.upload.allowed-hosts:}") private String allowedHosts;
+    @Value("${picture.upload.require-allowlist:false}") private boolean requireAllowlist;
     public void validate(String url) {
+        ThrowUtils.throwIf(requireAllowlist && (allowedHosts == null || allowedHosts.isBlank()),
+                ErrorCode.OPERATION_ERROR, "远程上传未配置可信来源列表");
         try {
             URI uri = new URI(url);
             ThrowUtils.throwIf(!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme()),

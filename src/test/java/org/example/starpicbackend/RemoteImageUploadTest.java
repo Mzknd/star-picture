@@ -22,6 +22,16 @@ class RemoteImageUploadTest {
             assertThrows(BusinessException.class,()->policy.validate(url));
         }
     }
+    @Test void productionUrlUploadRequiresConfiguredAllowlist() {
+        RemoteImagePolicy policy=new RemoteImagePolicy();
+        ReflectionTestUtils.setField(policy,"requireAllowlist",true);
+        assertThrows(BusinessException.class,()->policy.validate("https://example.invalid/image.png"));
+    }
+    @Test void rejectsHostOutsideConfiguredAllowlistBeforeDnsLookup() {
+        RemoteImagePolicy policy=new RemoteImagePolicy();
+        ReflectionTestUtils.setField(policy,"allowedHosts","trusted.example.invalid");
+        assertThrows(BusinessException.class,()->policy.validate("https://untrusted.example.invalid/image.png"));
+    }
     @Test void headRejectsOversizeBeforeDownloadingBody() throws Exception {
         HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         java.util.concurrent.atomic.AtomicInteger downloads=new java.util.concurrent.atomic.AtomicInteger();

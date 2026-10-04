@@ -10,8 +10,8 @@ public interface SpaceMapper extends BaseMapper<Space> {
 
     @Update("UPDATE space SET totalSize = totalSize + #{sizeDelta}, totalCount = totalCount + #{countDelta} "
             + "WHERE id = #{id} AND isDelete = 0 "
-            + "AND totalSize + #{sizeDelta} BETWEEN 0 AND maxSize "
-            + "AND totalCount + #{countDelta} BETWEEN 0 AND maxCount")
+            + "AND totalSize + #{sizeDelta} >= 0 AND (#{sizeDelta} <= 0 OR totalSize + #{sizeDelta} <= maxSize) "
+            + "AND totalCount + #{countDelta} >= 0 AND (#{countDelta} <= 0 OR totalCount + #{countDelta} <= maxCount)")
     int adjustQuota(@Param("id") Long id, @Param("sizeDelta") long sizeDelta,
                     @Param("countDelta") long countDelta);
 }

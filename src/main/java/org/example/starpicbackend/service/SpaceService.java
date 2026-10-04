@@ -25,6 +25,8 @@ public interface SpaceService extends IService<Space> {
      */
     void deleteSpace(long id, User loginUser);
 
+    void updateSpace(org.example.starpicbackend.model.dto.space.SpaceUpdateRequest request, User loginUser);
+
     long addSpace(SpaceAddRequest spaceAddRequest, User loginUser);
 
     /**

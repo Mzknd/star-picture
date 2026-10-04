@@ -49,6 +49,12 @@ cos:
     secretKey: ${COS_SECRET_KEY:}
     region: ${COS_REGION:ap-shanghai}
     bucket: ${COS_BUCKET:}
+picture:
+  upload:
+    allowed-hosts: ${PICTURE_UPLOAD_ALLOWED_HOSTS:}
+    require-allowlist: ${PICTURE_UPLOAD_REQUIRE_ALLOWLIST:false}
 app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
   user:
     initial-password: ${INITIAL_USER_PASSWORD:}

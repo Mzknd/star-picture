@@ -2,11 +2,13 @@ package org.example.starpicbackend;
 
 import com.qcloud.cos.COSClient;
 import org.example.starpicbackend.manager.CosManager;
+import org.example.starpicbackend.manager.PublicPictureCache;
 import org.example.starpicbackend.manager.PictureFileCleanup;
 import org.example.starpicbackend.manager.upload.FilePictureUpload;
 import org.example.starpicbackend.manager.upload.UrlPictureUpload;
 import org.example.starpicbackend.model.dto.file.UploadPictureResult;
 import org.example.starpicbackend.model.dto.picture.PictureUploadRequest;
+import org.example.starpicbackend.model.dto.picture.PictureEditByBatchRequest;
 import org.example.starpicbackend.model.dto.space.SpaceAddRequest;
 import org.example.starpicbackend.model.entity.*;
 import org.example.starpicbackend.service.*;
@@ -29,8 +31,10 @@ class QuotaTransactionTest {
     @Autowired SpaceService spaces;
     @Autowired UserService users;
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.transaction.support.TransactionTemplate transactions;
     @MockBean COSClient cosClient;
     @MockBean CosManager cosManager;
+    @MockBean PublicPictureCache cache;
     @MockBean FilePictureUpload files;
     @MockBean UrlPictureUpload urls;
     @MockBean PictureFileCleanup cleanup;
@@ -93,4 +97,60 @@ class QuotaTransactionTest {
             assertEquals(1,(a.get()?1:0)+(b.get()?1:0)); assertEquals(1,spaces.count());
         } finally {pool.shutdownNow();}
     }
+    @Test void outerRollbackCompensatesSuccessfullyUploadedObjects() {
+        Space s=space(10,1000);
+        assertThrows(IllegalStateException.class,()->transactions.execute(status->{
+            pictures.uploadPicture(new Object(),request(s.getId()),owner);
+            throw new IllegalStateException("outer transaction failed");
+        }));
+        assertEquals(0,pictures.count());assertEquals(0,spaces.getById(s.getId()).getTotalCount());
+        verify(cleanup).cleanup(any());
+    }
+
+    @Test void batchEditRejectsMixedIdsWithoutPartiallyChangingPictures() {
+        Space s=space(10,1000);long id=pictures.uploadPicture(new Object(),request(s.getId()),owner).getId();
+        PictureEditByBatchRequest edit=new PictureEditByBatchRequest();edit.setSpaceId(s.getId());
+        edit.setPictureIdList(java.util.List.of(id,999999L));edit.setCategory("changed");
+        assertThrows(BusinessException.class,()->pictures.editPictureByBatch(edit,owner));
+        assertNull(pictures.getById(id).getCategory());
+    }
+    @Test void batchEditValidatesAllRowsBeforeChangingAnyRow() {
+        Space s=space(10,1000);long a=pictures.uploadPicture(new Object(),request(s.getId()),owner).getId();
+        long b=pictures.uploadPicture(new Object(),request(s.getId()),owner).getId();
+        PictureEditByBatchRequest edit=new PictureEditByBatchRequest();edit.setSpaceId(s.getId());
+        edit.setPictureIdList(java.util.List.of(a,b));edit.setNameRule("x".repeat(129));
+        assertThrows(BusinessException.class,()->pictures.editPictureByBatch(edit,owner));
+        assertEquals("sample",pictures.getById(a).getName());assertEquals("sample",pictures.getById(b).getName());
+    }
+
+    @Test void historicalOverQuotaSpaceCanStillReleaseImages() {
+        Space s=space(10,1000);long id=pictures.uploadPicture(new Object(),request(s.getId()),owner).getId();
+        jdbc.update("UPDATE space SET maxCount=0,maxSize=0 WHERE id=?",s.getId());
+        pictures.deletePicture(id,owner);assertEquals(0,spaces.getById(s.getId()).getTotalCount());
+    }
+    @Test void administratorCannotShrinkQuotaBelowCurrentUsage() {
+        Space s=space(10,1000);pictures.uploadPicture(new Object(),request(s.getId()),owner);
+        User admin=new User();admin.setId(2L);admin.setUserRole("admin");
+        var update=new org.example.starpicbackend.model.dto.space.SpaceUpdateRequest();update.setId(s.getId());update.setMaxSize(10L);
+        assertThrows(BusinessException.class,()->spaces.updateSpace(update,admin));assertEquals(1000,spaces.getById(s.getId()).getMaxSize());
+    }
+    @Test void staleReviewPageCannotApproveReplacementImage() {
+        var request=new PictureUploadRequest();long id=pictures.uploadPicture(new Object(),request,owner).getId();
+        User admin=new User();admin.setId(2L);admin.setUserRole("admin");
+        var review=new org.example.starpicbackend.model.dto.picture.PictureReviewRequest();review.setId(id);review.setReviewStatus(1);
+        review.setExpectedUrl("https://example.invalid/old.webp");
+        assertThrows(BusinessException.class,()->pictures.doPictureReview(review,admin));assertEquals(0,pictures.getById(id).getReviewStatus());
+    }
+
+    @Test void reviewCompareAndSetHandlesNullMetadata() {
+        long id=pictures.uploadPicture(new Object(),request(null),owner).getId();
+        User admin=new User(); admin.setId(2L); admin.setUserRole("admin");
+        org.example.starpicbackend.model.dto.picture.PictureReviewRequest review=
+                new org.example.starpicbackend.model.dto.picture.PictureReviewRequest();
+        review.setId(id); review.setReviewStatus(1);
+        review.setExpectedUrl(pictures.getById(id).getUrl());
+        pictures.doPictureReview(review,admin);
+        assertEquals(1,pictures.getById(id).getReviewStatus());
+    }
+
 }

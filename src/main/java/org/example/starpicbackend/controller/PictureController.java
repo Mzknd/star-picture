@@ -28,6 +28,7 @@ import org.example.starpicbackend.model.vo.PictureVO;
 import org.example.starpicbackend.service.PictureService;
 import org.example.starpicbackend.service.SpaceService;
 import org.example.starpicbackend.service.UserService;
+import org.example.starpicbackend.manager.PublicPictureCache;
 import org.example.starpicbackend.utils.QueryRequestUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -58,6 +59,8 @@ public class PictureController {
 
     @Resource
     private SpaceService spaceService;
+
+    @Resource private PublicPictureCache publicPictureCache;
 
     /**
      * 上传图片（可重新上传）
@@ -118,6 +121,7 @@ public class PictureController {
         // 操作数据库
         boolean result = pictureService.updateById(picture);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        if(oldPicture.getSpaceId()==null) {publicPictureCache.invalidateAfterCommit();}
         return ResultUtils.success(true);
     }
 
@@ -179,6 +183,7 @@ public class PictureController {
     public BaseResponse<Page<PictureVO>> listPictureVOByPage(@RequestBody PictureQueryRequest pictureQueryRequest,
                                                              HttpServletRequest request) {
         QueryRequestUtils.validatePage(pictureQueryRequest, 20);
+        QueryRequestUtils.validateSort(pictureQueryRequest,"id","name","createTime","editTime","picSize","picWidth","picHeight","picScale");
         long current = pictureQueryRequest.getCurrent();
         long size = pictureQueryRequest.getPageSize();
         Long spaceId = pictureQueryRequest.getSpaceId();
@@ -194,11 +199,11 @@ public class PictureController {
             pictureQueryRequest.setReviewStatus(null);
         }
 
-        // 查询数据库
-        Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
-                pictureService.getQueryWrapper(pictureQueryRequest));
-        // 获取封装类
-        return ResultUtils.success(pictureService.getPictureVOPage(picturePage, request));
+        java.util.function.Supplier<Page<PictureVO>> loader = () -> {
+            Page<Picture> page=pictureService.page(new Page<>(current,size),pictureService.getQueryWrapper(pictureQueryRequest));
+            return pictureService.getPictureVOPage(page,request);
+        };
+        return ResultUtils.success(spaceId==null ? publicPictureCache.get(pictureQueryRequest,loader) : loader.get());
     }
 
     /**
