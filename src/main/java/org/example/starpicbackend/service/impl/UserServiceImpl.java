@@ -4,6 +4,7 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.ObjUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.example.starpicbackend.constant.UserConstant;
@@ -18,9 +19,13 @@ import org.example.starpicbackend.service.UserService;
 import org.example.starpicbackend.mapper.UserMapper;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.util.DigestUtils;
 
 import javax.servlet.http.HttpServletRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -34,6 +39,10 @@ import java.util.stream.Collectors;
 @Slf4j
 public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     implements UserService{
+
+    private static final int MAX_PASSWORD_BYTES = 72;
+    private static final String LEGACY_SALT = "Sakusei";
+    private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder(10);
 
 
     /**
@@ -58,6 +67,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
         if (!userPassword.equals(checkPassword)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "两次输入的密码不一致");
         }
+        validatePassword(userPassword);
+        validatePassword(checkPassword);
         // 2. 检查是否重复
         QueryWrapper<User> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("userAccount", userAccount);
@@ -86,36 +97,71 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
      */
     @Override
     public String getEncryptPassword(String userPassword) {
-        // 盐值，混淆密码
-        final String SALT = "Sakusei";
-        return DigestUtils.md5DigestAsHex((SALT + userPassword).getBytes());
+        validatePassword(userPassword);
+        return passwordEncoder.encode(userPassword);
+    }
+
+    private void validatePassword(String password) {
+        if (StrUtil.isBlank(password) || password.length() < 8) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户密码至少 8 位");
+        }
+        if (password.getBytes(StandardCharsets.UTF_8).length > MAX_PASSWORD_BYTES) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户密码不得超过 72 个 UTF-8 字节");
+        }
+    }
+
+    private boolean passwordMatches(String rawPassword, String storedPassword) {
+        if (storedPassword == null) {
+            return false;
+        }
+        if (storedPassword.startsWith("$2")) {
+            return passwordEncoder.matches(rawPassword, storedPassword);
+        }
+        if (!storedPassword.matches("[0-9a-fA-F]{32}")) {
+            return false;
+        }
+        byte[] expected = storedPassword.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.US_ASCII);
+        String salted = LEGACY_SALT + rawPassword;
+        byte[] utf8Hash = DigestUtils.md5DigestAsHex(salted.getBytes(StandardCharsets.UTF_8))
+                .getBytes(StandardCharsets.US_ASCII);
+        // Preserve the previous runtime-default encoding while making UTF-8 portable.
+        byte[] previousHash = DigestUtils.md5DigestAsHex(salted.getBytes())
+                .getBytes(StandardCharsets.US_ASCII);
+        return MessageDigest.isEqual(expected, utf8Hash) | MessageDigest.isEqual(expected, previousHash);
     }
 
     @Override
     public LoginUserVO userLogin(String userAccount, String userPassword, HttpServletRequest request) {
-        // 1. 校验
         if (StrUtil.hasBlank(userAccount, userPassword)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "参数为空");
         }
         if (userAccount.length() < 4) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户账号过短");
         }
-        if (userPassword.length() < 8) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户密码过短");
-        }
-        // 2. 加密
-        String encryptPassword = getEncryptPassword(userPassword);
-        // 查询用户是否存在
-        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("userAccount", userAccount);
-        queryWrapper.eq("userPassword", encryptPassword);
-        User user = this.baseMapper.selectOne(queryWrapper);
-        // 用户不存在
-        if (user == null) {
-            log.info("user login failed, userAccount cannot match userPassword");
+        validatePassword(userPassword);
+        User user = this.baseMapper.selectOne(new QueryWrapper<User>().eq("userAccount", userAccount));
+        if (user == null || !passwordMatches(userPassword, user.getUserPassword())) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户不存在或密码错误");
         }
-        // 3. 记录用户的登录态
+        if (!user.getUserPassword().startsWith("$2")) {
+            String oldHash = user.getUserPassword();
+            String upgradedHash = passwordEncoder.encode(userPassword);
+            int updated = this.baseMapper.update(null, new UpdateWrapper<User>()
+                    .eq("id", user.getId()).eq("userPassword", oldHash)
+                    .set("userPassword", upgradedHash));
+            if (updated == 0) {
+                // A concurrent login or password update must not be overwritten.
+                User latest = this.baseMapper.selectById(user.getId());
+                if (latest == null || !passwordMatches(userPassword, latest.getUserPassword())) {
+                    throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户不存在或密码错误");
+                }
+                user = latest;
+            } else {
+                user.setUserPassword(upgradedHash);
+            }
+        }
+        request.getSession();
+        request.changeSessionId();
         request.getSession().setAttribute(UserConstant.USER_LOGIN_STATE, user);
         return this.getLoginUserVO(user);
     }

@@ -96,8 +96,7 @@ public class UserController {
         BeanUtils.copyProperties(userAddRequest, user);
         ThrowUtils.throwIf(initialPassword == null || initialPassword.length() < 8,
                 ErrorCode.PARAMS_ERROR, "请先配置至少 8 位的管理员创建账号初始密码");
-        final String DEFAULT_PASSWORD = initialPassword;
-        String encryptPassword = userService.getEncryptPassword(DEFAULT_PASSWORD);
+        String encryptPassword = userService.getEncryptPassword(initialPassword);
         user.setUserPassword(encryptPassword);
         boolean result = userService.save(user);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);

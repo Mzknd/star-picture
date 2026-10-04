@@ -1,0 +1,25 @@
+[Unit]
+Description=Star Picture backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=starpicture
+Group=starpicture
+WorkingDirectory=/opt/star-picture
+EnvironmentFile=/etc/star-picture/star-picture.env
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=70 -Dfile.encoding=UTF-8 -jar /opt/star-picture/app.jar
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

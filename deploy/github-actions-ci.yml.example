@@ -1,0 +1,48 @@
+name: Java CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Isolated tests and executable JAR
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Confirm private configuration is absent from JAR
+        shell: bash
+        run: |
+          jar tf target/Star-pic-backend-0.0.1-SNAPSHOT.jar > target/jar-entries.txt
+          if grep -Eq '(^|/)(application-(local|prod)\.(yml|yaml)|\.env)$' target/jar-entries.txt; then
+            echo 'Private configuration unexpectedly included in JAR'
+            exit 1
+          fi
+          grep -q '^BOOT-INF/classes/' target/jar-entries.txt
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-test-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload executable JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-picture-backend
+          path: target/Star-pic-backend-0.0.1-SNAPSHOT.jar
+          if-no-files-found: error
+          retention-days: 14
